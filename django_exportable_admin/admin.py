@@ -2,6 +2,9 @@ from django.contrib import admin
 from django.conf.urls.defaults import patterns, url
 from django.template.defaultfilters import slugify
 from django.core.urlresolvers import reverse
+from django.http import HttpResponse
+
+import xlwt
 
 
 class ExportableAdmin(admin.ModelAdmin):
@@ -24,6 +27,10 @@ class ExportableAdmin(admin.ModelAdmin):
     #  ((u'CSV', u','), (u'Pipe', u'|'),)
     export_formats = tuple()
 
+    # an iterable of strings defining export types, such as:
+    #  ('xls',)
+    export_types = tuple()
+
     def get_paginator(self, request, queryset, per_page, orphans=0, allow_empty_first_page=True):
         """
         When we are exporting, modify the paginator to set the result limit to
@@ -42,11 +49,19 @@ class ExportableAdmin(admin.ModelAdmin):
         button for each export format.
         """
         app, mod = self.model._meta.app_label, self.model._meta.module_name
-        return (
-            ('Export %s' % format_name,
-             reverse("admin:%s_%s_export_%s" % (app, mod, format_name.lower())))
-             for format_name, delimiter in self.export_formats
-        )
+        buttons = [
+                ('Export %s' % format_name,
+                    reverse("admin:%s_%s_export_%s" % (app, mod,
+                        format_name.lower())))
+                for format_name, delimiter in self.export_formats
+                ]
+        buttons += [
+                ('Export %s' % type_name.upper(),
+                    reverse("admin:%s_%s_export_%s" % (app, mod,
+                        type_name.lower())))
+                for type_name in self.export_types
+                ]
+        return buttons
 
     def changelist_view(self, request, extra_context=None):
         """
@@ -55,7 +70,7 @@ class ExportableAdmin(admin.ModelAdmin):
         copy of the changelist_view to alter the template, we can simple change
         it after we get the TemplateResponse back.
         """
-        if extra_context and extra_context['export_delimiter']:
+        if extra_context and 'export_delimiter' in extra_context:
             # set this attr for get_paginator()
             request.is_export_request = True
             response = super(ExportableAdmin, self).changelist_view(request, extra_context)
@@ -64,11 +79,54 @@ class ExportableAdmin(admin.ModelAdmin):
             response['Content-Type'] = 'text/csv'
             response['Content-Disposition'] = 'attachment; filename=%s.csv' % slugify(self.model._meta.verbose_name)
             return response
+
+        elif extra_context and 'export_type' in extra_context:
+            # Generate response from super
+            request.is_export_request = True
+            response = super(ExportableAdmin, self).changelist_view(request, extra_context)
+
+            # Call appropriate method to handle export_type
+            method_name = "export_type_%s" % extra_context['export_type']
+            method = getattr(self, method_name)
+            return method(request, response, extra_context)
+
         extra_context = extra_context or {}
         extra_context.update({
             'export_buttons' : self.get_export_buttons(request),
         })
         return super(ExportableAdmin, self).changelist_view(request, extra_context)
+
+    # Adapted from https://gist.github.com/1560240
+    def export_type_xls(self, request, response, extra_context=None):
+        meta = self.model._meta
+        modeladmin = self
+        filename = '%s.xls' % meta.verbose_name_plural.lower()
+        # Get filtered queryset from changelist view
+        queryset = response.context_data['cl'].query_set
+
+        print "Got queryset for export.. total count: ", queryset.count()
+
+        def get_verbose_name(fieldname):
+            name = filter(lambda x: x.name == fieldname, meta.fields)
+            if name:
+                return (name[0].verbose_name or name[0].name).upper()
+            return fieldname.upper()
+
+        response = HttpResponse(mimetype='application/ms-excel')
+        response['Content-Disposition'] = 'attachment;filename=%s' % filename
+
+        wbk = xlwt.Workbook()
+        sht = wbk.add_sheet(meta.verbose_name_plural)
+
+        for j, fieldname in enumerate(modeladmin.list_display[1:]):
+            sht.write(0, j, get_verbose_name(fieldname))
+
+        for i, row in enumerate(queryset):
+            for j, fieldname in enumerate(modeladmin.list_display[1:]):
+                sht.write(i + 1, j, unicode(getattr(row, fieldname, '')))
+
+        wbk.save(response)
+        return response
 
     def get_urls(self):
         """
@@ -88,8 +146,23 @@ class ExportableAdmin(admin.ModelAdmin):
             )
             for format_name, delimiter in self.export_formats
         ]
+        for export_type in self.export_types:
+            new_urls.append(url(
+                r'^export/%s$' % export_type.lower(),
+                self.admin_site.admin_view(self.changelist_view),
+                name="%s_%s_export_%s" % (app, mod, export_type.lower()),
+                kwargs={'extra_context':{'export_type':export_type.lower()}},
+                ))
         my_urls = patterns('', *new_urls)
         return my_urls + urls
+
+class XLSExportableAdmin(ExportableAdmin):
+    """
+    ExportableAdmin subclass which adds export to XLS functionality.
+    """
+    export_types = (
+            'xls',
+    )
 
 class CSVExportableAdmin(ExportableAdmin):
     """
