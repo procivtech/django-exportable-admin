@@ -49,16 +49,17 @@ class ExportableAdmin(admin.ModelAdmin):
         button for each export format.
         """
         app, mod = self.model._meta.app_label, self.model._meta.module_name
+        append_qs = request.GET.urlencode()
         buttons = [
                 ('Export %s' % format_name,
                     reverse("admin:%s_%s_export_%s" % (app, mod,
-                        format_name.lower())))
+                        format_name.lower()))+"?"+append_qs)
                 for format_name, delimiter in self.export_formats
                 ]
         buttons += [
                 ('Export %s' % type_name.upper(),
                     reverse("admin:%s_%s_export_%s" % (app, mod,
-                        type_name.lower())))
+                        type_name.lower()))+"?"+append_qs)
                 for type_name in self.export_types
                 ]
         return buttons
